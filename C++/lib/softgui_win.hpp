@@ -1,6 +1,3 @@
-// softgui_win.hpp — SoftGUI expanded ANSI header-only implementation (full Core Widgets, smooth)
-// Overwrite your existing softgui_win.hpp with this file.
-
 #ifndef SOFTGUI_WIN_HPP
 #define SOFTGUI_WIN_HPP
 
@@ -16,6 +13,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <sstream>
 
 namespace SoftGUI {
 
@@ -492,6 +490,94 @@ struct ComboBox : Widget {
     }
 };
 
+// ---------- ProgressBar (determinate + indeterminate / marquee) ----------
+struct ProgressBar : Widget {
+    int min = 0;
+    int max = 100;
+    int value = 0;         // exposed integer value
+    float fvalue = 0.0f;   // smoothed internal value
+    float target = 0.0f;   // smoothing target for determinate
+    bool indeterminate = false; // marquee mode
+    float marquee_pos = 0.0f;   // 0..1 for marquee animation
+    int marquee_width = 40;     // pixels wide for the moving block
+
+    ProgressBar(bool ind=false,int mn=0,int mx=100,int val=0) : indeterminate(ind), min(mn), max(mx), value(val), fvalue((float)val), target((float)val) {
+        geom.h = 20; // default height
+    }
+
+    void set_value(int v) {
+        v = std::clamp(v, min, max);
+        target = (float)v;
+    }
+
+    void draw(HDC hdc) override {
+        RECT r{geom.x, geom.y, geom.x + geom.w, geom.y + geom.h};
+        // background
+        HBRUSH bg = CreateSolidBrush(RGB(230,230,230));
+        FillRect(hdc, &r, bg); DeleteObject(bg);
+        // border
+        Rectangle(hdc, r.left, r.top, r.right, r.bottom);
+
+        if (indeterminate) {
+            // draw moving marquee block
+            int w = geom.w;
+            int blockW = std::min(marquee_width, w);
+            // position in pixels
+            int px = (int)((marquee_pos - 0.5f) * (w + blockW));
+            // create a rect for moving block (wrap-around)
+            int bx = geom.x + px - blockW/2;
+            int by = geom.y + 2;
+            int bw = blockW;
+            RECT br = { bx, by, bx + bw, geom.y + geom.h - 2 };
+            // handle wrap drawing (draw twice if needed)
+            HBRUSH fill = CreateSolidBrush(RGB(100,160,240));
+            // draw primary
+            if (br.right > geom.x && br.left < geom.x + geom.w) {
+                RECT clipped = br;
+                if (clipped.left < geom.x) clipped.left = geom.x;
+                if (clipped.right > geom.x + geom.w) clipped.right = geom.x + geom.w;
+                FillRect(hdc, &clipped, fill);
+            }
+            // draw second copy wrapped
+            RECT br2 = { bx + w, by, bx + w + bw, geom.y + geom.h - 2 };
+            if (br2.right > geom.x && br2.left < geom.x + geom.w) {
+                RECT clipped = br2;
+                if (clipped.left < geom.x) clipped.left = geom.x;
+                if (clipped.right > geom.x + geom.w) clipped.right = geom.x + geom.w;
+                FillRect(hdc, &clipped, fill);
+            }
+            DeleteObject(fill);
+
+            // optionally draw text
+            std::ostringstream ss; ss << "Loading...";
+            HFONT hOld = (HFONT)SelectObject(hdc, make_font(hdc));
+            SetBkMode(hdc, TRANSPARENT);
+            RECT tr = r; DrawTextA(hdc, ss.str().c_str(), (int)ss.str().size(), &tr, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+            SelectObject(hdc, hOld);
+        } else {
+            // determinate: fill proportionally using fvalue (smoothed)
+            int range = std::max(1, max - min);
+            float norm = (fvalue - min) / (float)range;
+            norm = std::max(0.0f, std::min(1.0f, norm));
+            int fillw = (int)std::round(norm * geom.w);
+            RECT fr = { geom.x + 1, geom.y + 1, geom.x + fillw, geom.y + geom.h - 1 };
+            if (fr.right > fr.left) {
+                HBRUSH fill = CreateSolidBrush(RGB(100,180,120));
+                FillRect(hdc, &fr, fill);
+                DeleteObject(fill);
+            }
+
+            // percent text
+            int percent = (int)std::round(norm * 100.0f);
+            std::ostringstream ss; ss << percent << "%";
+            HFONT hOld = (HFONT)SelectObject(hdc, make_font(hdc));
+            SetBkMode(hdc, TRANSPARENT);
+            RECT tr = r; DrawTextA(hdc, ss.str().c_str(), (int)ss.str().size(), &tr, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+            SelectObject(hdc, hOld);
+        }
+    }
+};
+
 // ---------- Window (host) ----------
 class Window {
 public:
@@ -500,6 +586,7 @@ public:
     {
         register_class();
         create_window();
+        last_tick_ = std::chrono::steady_clock::now();
         // start periodic timer for smooth redraw and animations (~60Hz)
         if (hwnd_) {
             SetTimer(hwnd_, kRefreshTimerId, kRefreshPeriodMs, NULL);
@@ -526,6 +613,7 @@ public:
     std::shared_ptr<ListBox> make_listbox(){ auto p = std::make_shared<ListBox>(); register_widget(p); return p; }
     std::shared_ptr<MultiListBox> make_multilistbox(){ auto p = std::make_shared<MultiListBox>(); register_widget(p); return p; }
     std::shared_ptr<ComboBox> make_combobox(){ auto p = std::make_shared<ComboBox>(); register_widget(p); return p; }
+    std::shared_ptr<ProgressBar> make_progressbar(bool indeterminate=false,int mn=0,int mx=100,int val=0) { auto p = std::make_shared<ProgressBar>(indeterminate,mn,mx,val); register_widget(p); return p; }
 
     // top-level add for widgets (also sets parent to window)
     void add_child(WidgetPtr w) {
@@ -588,6 +676,9 @@ private:
 
     // capture dragging widget (raw pointer into a widget owned in widgets_)
     Widget* capture_widget_ = nullptr;
+
+    // timing for animations
+    std::chrono::steady_clock::time_point last_tick_;
 
     // register widget
     void register_widget(WidgetPtr w) {
@@ -667,19 +758,21 @@ private:
         return DefWindowProcA(hwnd, msg, wParam, lParam);
     }
 
-    // helper: update animations (sliders) each tick
+    // helper: update animations (sliders, progress bars) each tick
     void tick_animate() {
         bool need_invalidate = false;
         const float smoothing = 0.20f; // interpolation factor (0..1) larger -> faster
+        auto now = std::chrono::steady_clock::now();
+        float dt = std::chrono::duration_cast<std::chrono::duration<float>>(now - last_tick_).count();
+        last_tick_ = now;
+
         for (auto &wptr : widgets_) {
             if (!wptr) continue;
             // HSlider
             if (auto hs = dynamic_cast<HSlider*>(wptr.get())) {
-                float prev = hs->fvalue;
                 float diff = hs->target - hs->fvalue;
                 if (std::fabs(diff) > 0.01f) {
                     hs->fvalue += diff * smoothing;
-                    // clamp
                     if ((hs->target - hs->fvalue) * diff < 0) hs->fvalue = hs->target;
                     int newv = (int)std::lround(hs->fvalue);
                     if (newv != hs->value) {
@@ -692,7 +785,6 @@ private:
             }
             // VSlider
             if (auto vs = dynamic_cast<VSlider*>(wptr.get())) {
-                float prev = vs->fvalue;
                 float diff = vs->target - vs->fvalue;
                 if (std::fabs(diff) > 0.01f) {
                     vs->fvalue += diff * smoothing;
@@ -704,6 +796,31 @@ private:
                     }
                     vs->mark_dirty();
                     need_invalidate = true;
+                }
+            }
+            // ProgressBar
+            if (auto pb = dynamic_cast<ProgressBar*>(wptr.get())) {
+                if (pb->indeterminate) {
+                    // advance marquee
+                    float speed = 0.6f; // cycles per second
+                    pb->marquee_pos += speed * dt;
+                    // keep in 0..1
+                    if (pb->marquee_pos > 1.0f) pb->marquee_pos = std::fmod(pb->marquee_pos, 1.0f);
+                    pb->mark_dirty();
+                    need_invalidate = true;
+                } else {
+                    float diff = pb->target - pb->fvalue;
+                    if (std::fabs(diff) > 0.01f) {
+                        pb->fvalue += diff * smoothing;
+                        if ((pb->target - pb->fvalue) * diff < 0) pb->fvalue = pb->target;
+                        int newv = (int)std::lround(pb->fvalue);
+                        if (newv != pb->value) {
+                            pb->value = newv;
+                            if (pb->on_change) pb->on_change(pb);
+                        }
+                        pb->mark_dirty();
+                        need_invalidate = true;
+                    }
                 }
             }
             // caret blink & other widget-level periodic updates -> mark dirty to keep blink working
