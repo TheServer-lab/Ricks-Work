@@ -1,0 +1,13 @@
+Ricks-Work License (Attribution Required)
+
+Copyright (c) 2025 The author
+
+Permission is hereby granted to anyone to use, copy, modify, and distribute the files in this repository ("Ricks-Work") for any purpose, provided that:
+
+1. You give proper credit by clearly stating that the work comes from this repository and providing a link to it: 
+   https://github.com/TheServer-lab/Ricks-Work/
+2. You acknowledge the author ([Your Name]) in any distributed or derivative work.
+
+All rights are reserved by the author. The author retains the right to modify the terms of this license or change the license entirely at any time.
+
+THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
