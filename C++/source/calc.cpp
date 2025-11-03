@@ -1,107 +1,103 @@
 #include "easycpp.hpp"
-#include <stack>
-#include <cctype>
-#include <sstream>
 
-using namespace easy;
-
-// --- Simple expression evaluator (handles + - * / and parentheses) ---
-double eval_expr(const std::string& s) {
-    std::istringstream in(s);
-    std::stack<double> values;
-    std::stack<char> ops;
-
-    auto apply = [&](char op) {
-        if (values.size() < 2) return;
-        double b = values.top(); values.pop();
-        double a = values.top(); values.pop();
-        if (op == '+') values.push(a + b);
-        else if (op == '-') values.push(a - b);
-        else if (op == '*') values.push(a * b);
-        else if (op == '/') values.push(b == 0 ? 0 : a / b);
-    };
-
-    auto prec = [](char c) {
-        if (c == '+' || c == '-') return 1;
-        if (c == '*' || c == '/') return 2;
-        return 0;
-    };
-
-    char c;
-    while (in >> c) {
-        if (isdigit(c) || c == '.') {
-            in.putback(c);
-            double val;
-            in >> val;
-            values.push(val);
-        } else if (c == '(') {
-            ops.push(c);
-        } else if (c == ')') {
-            while (!ops.empty() && ops.top() != '(') {
-                apply(ops.top());
-                ops.pop();
-            }
-            if (!ops.empty()) ops.pop();
-        } else if (strchr("+-*/", c)) {
-            while (!ops.empty() && prec(ops.top()) >= prec(c)) {
-                apply(ops.top());
-                ops.pop();
-            }
-            ops.push(c);
-        }
-    }
-
-    while (!ops.empty()) {
-        apply(ops.top());
-        ops.pop();
-    }
-
-    return values.empty() ? 0 : values.top();
-}
-
-// --- Main GUI app ---
 int main() {
-    App app("EasyCPP Calculator", 320, 420);
+    // Create main window
+    Window win(320, 480, "EasyCPP Calculator");
 
-    Label display(app, "0", 10, 10, 300, 40);
-    std::string expr;
+    // Display label for showing result
+    auto display = win.make_label("0");
+    display->geom = {20, 20, 280, 50};
+    display->font_size = 20;
 
-    const char* buttons[4][4] = {
-        {"7", "8", "9", "/"},
-        {"4", "5", "6", "*"},
-        {"1", "2", "3", "-"},
-        {"0", "C", "=", "+"}
+    // Variables for calculator logic
+    string current = "";
+    double lastValue = 0.0;
+    char op = 0;
+    bool newInput = false;
+
+    auto update_display = [&]() {
+        display->text = current.empty() ? "0" : current;
+        display->mark_dirty();
     };
 
-    int startY = 60;
-    int bw = 70, bh = 60, gap = 10;
+    auto handle_number = [&](string num) {
+        if (newInput) { current = ""; newInput = false; }
+        current += num;
+        update_display();
+    };
 
-    for (int r = 0; r < 4; ++r) {
-        for (int c = 0; c < 4; ++c) {
-            std::string t = buttons[r][c];
-            Button(app, t, 10 + c * (bw + gap), startY + r * (bh + gap), bw, bh, [&, t]() {
-                if (t == "C") {
-                    expr.clear();
-                    display.set("0");
-                } else if (t == "=") {
-                    try {
-                        double res = eval_expr(expr);
-                        std::ostringstream ss;
-                        ss << res;
-                        expr = ss.str();
-                        display.set(expr);
-                    } catch (...) {
-                        display.set("Error");
-                        expr.clear();
-                    }
-                } else {
-                    expr += t;
-                    display.set(expr);
-                }
-            });
+    auto handle_operator = [&](char oper) {
+        if (!current.empty()) {
+            lastValue = stod(current);
+            current.clear();
         }
+        op = oper;
+        newInput = false;
+        update_display();
+    };
+
+    auto calculate = [&]() {
+        if (current.empty() || op == 0) return;
+        double val2 = stod(current);
+        double result = lastValue;
+
+        switch (op) {
+            case '+': result += val2; break;
+            case '-': result -= val2; break;
+            case '*': result *= val2; break;
+            case '/': 
+                if (val2 != 0) result /= val2; 
+                else { display->text = "Error"; display->mark_dirty(); return; }
+                break;
+        }
+
+        current = to_string(result);
+        // trim trailing .000000
+        if (current.find('.') != string::npos)
+            current.erase(current.find_last_not_of('0') + 1, string::npos);
+        if (current.back() == '.') current.pop_back();
+
+        update_display();
+        op = 0;
+        newInput = true;
+    };
+
+    auto clear_all = [&]() {
+        current = "";
+        lastValue = 0;
+        op = 0;
+        update_display();
+    };
+
+    // Create buttons
+    vector<string> labels = {
+        "7","8","9","/",
+        "4","5","6","*",
+        "1","2","3","-",
+        "0",".","=","+",
+        "C"
+    };
+
+    int x = 20, y = 90;
+    int w = 60, h = 50;
+    int margin = 10;
+    int count = 0;
+
+    for (auto &lbl : labels) {
+        auto btn = win.make_button(lbl);
+        btn->geom = {x, y, w, h};
+        btn->onclick0 = [&, lbl]() {
+            if (lbl == "C") clear_all();
+            else if (lbl == "=") calculate();
+            else if (lbl == "+" || lbl == "-" || lbl == "*" || lbl == "/") handle_operator(lbl[0]);
+            else handle_number(lbl);
+        };
+        x += w + margin;
+        count++;
+        if (count % 4 == 0) { x = 20; y += h + margin; }
     }
 
-    app.run();
+    // Run main loop
+    win.mainloop();
     return 0;
 }
