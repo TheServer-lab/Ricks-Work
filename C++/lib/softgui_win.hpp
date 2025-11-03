@@ -65,6 +65,7 @@ struct Widget {
     virtual void on_key_internal(char ch) { if (on_key) on_key(this, ch); }
     virtual void mark_dirty() { dirty = true; if (parent) parent->mark_dirty(); }
 
+    // create a font (caller must delete returned HFONT)
     HFONT make_font(HDC hdc) {
         return CreateFontA(
             -MulDiv(font_size, GetDeviceCaps(hdc, LOGPIXELSY), 72),
@@ -94,10 +95,12 @@ struct Label : Widget {
         HBRUSH bg = CreateSolidBrush(GetSysColor(COLOR_WINDOW));
         FillRect(hdc, &r, bg); DeleteObject(bg);
 
-        HFONT hOld = (HFONT)SelectObject(hdc, make_font(hdc));
+        HFONT hFont = make_font(hdc);
+        HFONT hOld = (HFONT)SelectObject(hdc, hFont);
         SetBkMode(hdc, TRANSPARENT);
         DrawTextA(hdc, text.c_str(), (int)text.size(), &r, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
         SelectObject(hdc, hOld);
+        DeleteObject(hFont);
     }
 };
 
@@ -117,26 +120,23 @@ struct Entry : Widget {
         // border
         Rectangle(hdc, r.left, r.top, r.right, r.bottom);
 
-        HFONT hOld = (HFONT)SelectObject(hdc, make_font(hdc));
+        HFONT hFont = make_font(hdc);
+        HFONT hOld = (HFONT)SelectObject(hdc, hFont);
         SetBkMode(hdc, TRANSPARENT);
 
         RECT tr = r;
         tr.left += 4;
         DrawTextA(hdc, text.c_str(), (int)text.size(), &tr, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
 
-        // caret blinking (timer-driven redraw will animate caret)
-        if (focused) {
-            auto now = std::chrono::steady_clock::now();
-            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_blink).count();
-            if (ms > 500) { caret_visible = !caret_visible; last_blink = now; }
-            if (caret_visible) {
-                int cx = tr.left + TextWidth(hdc, text.c_str(), (int)caret);
-                MoveToEx(hdc, cx, tr.top+4, nullptr);
-                LineTo(hdc, cx, tr.bottom-4);
-            }
+        // caret (visibility controlled by tick_animate)
+        if (focused && caret_visible) {
+            int cx = tr.left + TextWidth(hdc, text.c_str(), (int)caret);
+            MoveToEx(hdc, cx, tr.top+4, nullptr);
+            LineTo(hdc, cx, tr.bottom-4);
         }
 
         SelectObject(hdc, hOld);
+        DeleteObject(hFont);
     }
 
     virtual void on_click_internal(int x,int y) override {
@@ -173,12 +173,12 @@ private:
         return sz.cx;
     }
 
-    // approximate position -> index (naive)
-    int TextIndexFromPos(int px) {
+    // position is local x inside widget (not screen)
+    int TextIndexFromPos(int local_px) {
         HDC hdc = GetDC(NULL);
         HFONT h = make_font(hdc);
         HFONT hold = (HFONT)SelectObject(hdc, h);
-        int offset = px - (geom.x + 4);
+        int offset = local_px - 4; // left padding
         if (offset <= 0) { SelectObject(hdc, hold); DeleteObject(h); ReleaseDC(NULL, hdc); return 0; }
         int idx = 0;
         for (size_t i=1;i<=text.size();++i) {
@@ -204,10 +204,12 @@ struct Button : Widget {
         FillRect(hdc, &r, bg); DeleteObject(bg);
 
         DrawFrameControl(hdc, &r, DFC_BUTTON, DFCS_BUTTONPUSH);
-        HFONT hOld = (HFONT)SelectObject(hdc, make_font(hdc));
+        HFONT hFont = make_font(hdc);
+        HFONT hOld = (HFONT)SelectObject(hdc, hFont);
         SetBkMode(hdc, TRANSPARENT);
         DrawTextA(hdc, text.c_str(), (int)text.size(), &r, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
         SelectObject(hdc, hOld);
+        DeleteObject(hFont);
     }
     void on_click_internal(int x,int y) override {
         if (onclick0) onclick0();
@@ -219,7 +221,7 @@ struct Button : Widget {
 struct Canvas : Widget {
     std::vector<uint8_t> buffer; // BGR per pixel
     int buf_w=0, buf_h=0;
-    Canvas(int w=100,int h=100){ buf_w=w; buf_h=h; geom.w=w; geom.h=h; buffer.resize(w*h*3); }
+    Canvas(int w=100,int h=100){ buf_w=w; buf_h=h; geom.w=w; geom.h=h; buffer.resize(std::max(0,w*h*3)); }
     void put_pixel(int x,int y,const Color &c){
         if (x<0||y<0||x>=buf_w||y>=buf_h) return;
         int idx = (y*buf_w + x)*3;
@@ -236,7 +238,7 @@ struct Canvas : Widget {
         mark_dirty();
     }
     void draw(HDC hdc) override {
-        if (buf_w<=0||buf_h<=0) return;
+        if (buf_w<=0||buf_h<=0 || buffer.empty()) return;
         BITMAPINFO bmi;
         ZeroMemory(&bmi,sizeof(bmi));
         bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -263,11 +265,13 @@ struct Checkbox : Widget {
             LineTo(hdc, r.left+7, r.top+12);
             LineTo(hdc, r.left+13, r.top+4);
         }
-        HFONT hOld = (HFONT)SelectObject(hdc, make_font(hdc));
+        HFONT hFont = make_font(hdc);
+        HFONT hOld = (HFONT)SelectObject(hdc, hFont);
         SetBkMode(hdc, TRANSPARENT);
         RECT tr = r; tr.left += 20;
         DrawTextA(hdc, text.c_str(), (int)text.size(), &tr, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
         SelectObject(hdc, hOld);
+        DeleteObject(hFont);
     }
     void on_click_internal(int x,int y) override {
         checked = !checked;
@@ -287,11 +291,13 @@ struct RadioButton : Widget {
         if (selected) {
             Ellipse(hdc, r.left+4, r.top+4, r.left+12, r.top+12);
         }
-        HFONT hOld = (HFONT)SelectObject(hdc, make_font(hdc));
+        HFONT hFont = make_font(hdc);
+        HFONT hOld = (HFONT)SelectObject(hdc, hFont);
         SetBkMode(hdc, TRANSPARENT);
         RECT tr = r; tr.left += 20;
         DrawTextA(hdc, text.c_str(), (int)text.size(), &tr, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
         SelectObject(hdc, hOld);
+        DeleteObject(hFont);
     }
     void on_click_internal(int x,int y) override {
         // if inside a Frame, clear group siblings with same group_id
@@ -376,7 +382,8 @@ struct ListBox : Widget {
         HBRUSH bg = CreateSolidBrush(RGB(255,255,255));
         FillRect(hdc, &r, bg); DeleteObject(bg);
         Rectangle(hdc, r.left, r.top, r.right, r.bottom);
-        HFONT hOld = (HFONT)SelectObject(hdc, make_font(hdc));
+        HFONT hFont = make_font(hdc);
+        HFONT hOld = (HFONT)SelectObject(hdc, hFont);
         int yoff = r.top;
         for (size_t i=0;i<items.size();++i) {
             RECT tr = { r.left + 2, yoff, r.right, yoff + item_height };
@@ -390,6 +397,7 @@ struct ListBox : Widget {
             if (yoff > r.bottom) break;
         }
         SelectObject(hdc, hOld);
+        DeleteObject(hFont);
     }
     void on_click_internal(int x,int y) override {
         int idx = y / item_height;
@@ -411,7 +419,8 @@ struct MultiListBox : Widget {
         HBRUSH bg = CreateSolidBrush(RGB(255,255,255));
         FillRect(hdc, &r, bg); DeleteObject(bg);
         Rectangle(hdc, r.left, r.top, r.right, r.bottom);
-        HFONT hOld = (HFONT)SelectObject(hdc, make_font(hdc));
+        HFONT hFont = make_font(hdc);
+        HFONT hOld = (HFONT)SelectObject(hdc, hFont);
         int yoff = r.top;
         for (size_t i=0;i<items.size();++i) {
             RECT tr = { r.left + 2, yoff, r.right, yoff + item_height };
@@ -425,6 +434,7 @@ struct MultiListBox : Widget {
             if (yoff > r.bottom) break;
         }
         SelectObject(hdc, hOld);
+        DeleteObject(hFont);
     }
     void on_click_internal(int x,int y) override {
         int idx = y / item_height;
@@ -451,12 +461,14 @@ struct ComboBox : Widget {
         FillRect(hdc, &r, bg); DeleteObject(bg);
         Rectangle(hdc, r.left, r.top, r.right, r.bottom);
 
-        HFONT hOld = (HFONT)SelectObject(hdc, make_font(hdc));
+        HFONT hFont = make_font(hdc);
+        HFONT hOld = (HFONT)SelectObject(hdc, hFont);
         if (selected >= 0 && selected < (int)options.size()) {
             RECT tr = r; tr.left += 4;
             DrawTextA(hdc, options[selected].c_str(), (int)options[selected].size(), &tr, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
         }
         SelectObject(hdc, hOld);
+        DeleteObject(hFont);
 
         // arrow
         POINT pts[3] = { {r.right-14, r.top + (r.bottom - r.top)/2 - 4}, {r.right-6, r.top + (r.bottom - r.top)/2 - 4}, {r.right-10, r.top + (r.bottom - r.top)/2 + 2} };
@@ -466,7 +478,8 @@ struct ComboBox : Widget {
             RECT ext = {r.left, r.bottom, r.right, r.bottom + (int)options.size()*option_height};
             HBRUSH bg2 = CreateSolidBrush(RGB(240,240,240));
             FillRect(hdc, &ext, bg2); DeleteObject(bg2);
-            HFONT hOld2 = (HFONT)SelectObject(hdc, make_font(hdc));
+            HFONT hFont2 = make_font(hdc);
+            HFONT hOld2 = (HFONT)SelectObject(hdc, hFont2);
             int yoff = r.bottom;
             for (size_t i=0;i<options.size();++i) {
                 RECT tr = { r.left + 4, yoff, r.right, yoff + option_height };
@@ -474,6 +487,7 @@ struct ComboBox : Widget {
                 yoff += option_height;
             }
             SelectObject(hdc, hOld2);
+            DeleteObject(hFont2);
         }
     }
 
@@ -522,40 +536,34 @@ struct ProgressBar : Widget {
             // draw moving marquee block
             int w = geom.w;
             int blockW = std::min(marquee_width, w);
-            // position in pixels
-            int px = (int)((marquee_pos - 0.5f) * (w + blockW));
-            // create a rect for moving block (wrap-around)
-            int bx = geom.x + px - blockW/2;
+            // position in pixels (centered around marquee_pos)
+            int px = (int)((marquee_pos) * (w + blockW)) - blockW/2;
+            int bx = geom.x + px;
             int by = geom.y + 2;
             int bw = blockW;
             RECT br = { bx, by, bx + bw, geom.y + geom.h - 2 };
-            // handle wrap drawing (draw twice if needed)
             HBRUSH fill = CreateSolidBrush(RGB(100,160,240));
-            // draw primary
-            if (br.right > geom.x && br.left < geom.x + geom.w) {
-                RECT clipped = br;
-                if (clipped.left < geom.x) clipped.left = geom.x;
-                if (clipped.right > geom.x + geom.w) clipped.right = geom.x + geom.w;
-                FillRect(hdc, &clipped, fill);
-            }
-            // draw second copy wrapped
-            RECT br2 = { bx + w, by, bx + w + bw, geom.y + geom.h - 2 };
-            if (br2.right > geom.x && br2.left < geom.x + geom.w) {
-                RECT clipped = br2;
-                if (clipped.left < geom.x) clipped.left = geom.x;
-                if (clipped.right > geom.x + geom.w) clipped.right = geom.x + geom.w;
-                FillRect(hdc, &clipped, fill);
-            }
+            // draw primary and wrap
+            RECT clipped = br;
+            if (clipped.left < geom.x) clipped.left = geom.x;
+            if (clipped.right > geom.x + geom.w) clipped.right = geom.x + geom.w;
+            if (clipped.right > clipped.left) FillRect(hdc, &clipped, fill);
+
+            RECT br2 = { bx - (w + blockW), by, bx - (w + blockW) + bw, geom.y + geom.h - 2 };
+            RECT clipped2 = br2;
+            if (clipped2.left < geom.x) clipped2.left = geom.x;
+            if (clipped2.right > geom.x + geom.w) clipped2.right = geom.x + geom.w;
+            if (clipped2.right > clipped2.left) FillRect(hdc, &clipped2, fill);
+
             DeleteObject(fill);
 
-            // optionally draw text
-            std::ostringstream ss; ss << "Loading...";
-            HFONT hOld = (HFONT)SelectObject(hdc, make_font(hdc));
+            HFONT hFont = make_font(hdc);
+            HFONT hOld = (HFONT)SelectObject(hdc, hFont);
             SetBkMode(hdc, TRANSPARENT);
-            RECT tr = r; DrawTextA(hdc, ss.str().c_str(), (int)ss.str().size(), &tr, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+            RECT tr = r; DrawTextA(hdc, "Loading...", 10, &tr, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
             SelectObject(hdc, hOld);
+            DeleteObject(hFont);
         } else {
-            // determinate: fill proportionally using fvalue (smoothed)
             int range = std::max(1, max - min);
             float norm = (fvalue - min) / (float)range;
             norm = std::max(0.0f, std::min(1.0f, norm));
@@ -567,13 +575,14 @@ struct ProgressBar : Widget {
                 DeleteObject(fill);
             }
 
-            // percent text
             int percent = (int)std::round(norm * 100.0f);
             std::ostringstream ss; ss << percent << "%";
-            HFONT hOld = (HFONT)SelectObject(hdc, make_font(hdc));
+            HFONT hFont = make_font(hdc);
+            HFONT hOld = (HFONT)SelectObject(hdc, hFont);
             SetBkMode(hdc, TRANSPARENT);
             RECT tr = r; DrawTextA(hdc, ss.str().c_str(), (int)ss.str().size(), &tr, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
             SelectObject(hdc, hOld);
+            DeleteObject(hFont);
         }
     }
 };
@@ -696,7 +705,9 @@ private:
         wc_.cbWndExtra = sizeof(void*);
         wc_.hInstance = hInst_;
         wc_.hbrBackground = (HBRUSH)(COLOR_WINDOW+1);
-        wc_.lpszClassName = "SoftGUIWindowClass";
+        // class name must persist - use a static string
+        static const char *kClassName = "SoftGUIWindowClass";
+        wc_.lpszClassName = kClassName;
         wc_.hCursor = LoadCursor(NULL, IDC_ARROW);
         RegisterClassExA(&wc_);
     }
@@ -761,19 +772,21 @@ private:
     // helper: update animations (sliders, progress bars) each tick
     void tick_animate() {
         bool need_invalidate = false;
-        const float smoothing = 0.20f; // interpolation factor (0..1) larger -> faster
+        // smoothing factor computed from delta time (frame-rate independent)
         auto now = std::chrono::steady_clock::now();
         float dt = std::chrono::duration_cast<std::chrono::duration<float>>(now - last_tick_).count();
         last_tick_ = now;
+        float alpha = std::min(1.0f, dt * 12.0f); // roughly eases over ~0.08s
 
         for (auto &wptr : widgets_) {
             if (!wptr) continue;
             // HSlider
             if (auto hs = dynamic_cast<HSlider*>(wptr.get())) {
                 float diff = hs->target - hs->fvalue;
-                if (std::fabs(diff) > 0.01f) {
-                    hs->fvalue += diff * smoothing;
-                    if ((hs->target - hs->fvalue) * diff < 0) hs->fvalue = hs->target;
+                if (std::fabs(diff) > 0.001f) {
+                    hs->fvalue += diff * alpha;
+                    // snap if very close
+                    if (std::fabs(hs->target - hs->fvalue) < 0.001f) hs->fvalue = hs->target;
                     int newv = (int)std::lround(hs->fvalue);
                     if (newv != hs->value) {
                         hs->value = newv;
@@ -786,9 +799,9 @@ private:
             // VSlider
             if (auto vs = dynamic_cast<VSlider*>(wptr.get())) {
                 float diff = vs->target - vs->fvalue;
-                if (std::fabs(diff) > 0.01f) {
-                    vs->fvalue += diff * smoothing;
-                    if ((vs->target - vs->fvalue) * diff < 0) vs->fvalue = vs->target;
+                if (std::fabs(diff) > 0.001f) {
+                    vs->fvalue += diff * alpha;
+                    if (std::fabs(vs->target - vs->fvalue) < 0.001f) vs->fvalue = vs->target;
                     int newv = (int)std::lround(vs->fvalue);
                     if (newv != vs->value) {
                         vs->value = newv;
@@ -801,18 +814,16 @@ private:
             // ProgressBar
             if (auto pb = dynamic_cast<ProgressBar*>(wptr.get())) {
                 if (pb->indeterminate) {
-                    // advance marquee
                     float speed = 0.6f; // cycles per second
                     pb->marquee_pos += speed * dt;
-                    // keep in 0..1
-                    if (pb->marquee_pos > 1.0f) pb->marquee_pos = std::fmod(pb->marquee_pos, 1.0f);
+                    pb->marquee_pos = std::fmod(pb->marquee_pos, 1.0f);
                     pb->mark_dirty();
                     need_invalidate = true;
                 } else {
                     float diff = pb->target - pb->fvalue;
-                    if (std::fabs(diff) > 0.01f) {
-                        pb->fvalue += diff * smoothing;
-                        if ((pb->target - pb->fvalue) * diff < 0) pb->fvalue = pb->target;
+                    if (std::fabs(diff) > 0.001f) {
+                        pb->fvalue += diff * alpha;
+                        if (std::fabs(pb->target - pb->fvalue) < 0.001f) pb->fvalue = pb->target;
                         int newv = (int)std::lround(pb->fvalue);
                         if (newv != pb->value) {
                             pb->value = newv;
@@ -823,10 +834,20 @@ private:
                     }
                 }
             }
-            // caret blink & other widget-level periodic updates -> mark dirty to keep blink working
+            // caret blink: independent timer toggles caret for entries
             if (auto en = dynamic_cast<Entry*>(wptr.get())) {
-                // rely on timer-driven blink in Entry::draw (it checks time) but we must invalidate to show it
-                need_invalidate = true;
+                if (en->focused) {
+                    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - en->last_blink).count();
+                    if (ms > 500) {
+                        en->caret_visible = !en->caret_visible;
+                        en->last_blink = now;
+                        en->mark_dirty();
+                        need_invalidate = true;
+                    }
+                } else {
+                    // ensure caret hidden when not focused
+                    if (en->caret_visible) { en->caret_visible = false; en->mark_dirty(); need_invalidate = true; }
+                }
             }
         }
 
@@ -846,32 +867,29 @@ private:
                 GetClientRect(hwnd, &rc);
                 int w = rc.right - rc.left;
                 int h = rc.bottom - rc.top;
-                if (w <= 0 || h <= 0) { EndPaint(hwnd, &ps); return 0; }
+                if (w > 0 && h > 0) {
+                    HDC memDC = CreateCompatibleDC(hdc);
+                    HBITMAP memBM = CreateCompatibleBitmap(hdc, w, h);
+                    HGDIOBJ oldBM = SelectObject(memDC, memBM);
 
-                // Create compatible memory DC + bitmap for double buffering
-                HDC memDC = CreateCompatibleDC(hdc);
-                HBITMAP memBM = CreateCompatibleBitmap(hdc, w, h);
-                HGDIOBJ oldBM = SelectObject(memDC, memBM);
+                    // Fill background
+                    HBRUSH bg = CreateSolidBrush(GetSysColor(COLOR_WINDOW));
+                    FillRect(memDC, &rc, bg);
+                    DeleteObject(bg);
 
-                // Fill background once
-                HBRUSH bg = CreateSolidBrush(GetSysColor(COLOR_WINDOW));
-                FillRect(memDC, &rc, bg);
-                DeleteObject(bg);
+                    // Draw widgets
+                    for (auto &wptr : widgets_) {
+                        if (wptr && wptr->visible) wptr->draw(memDC);
+                        if (wptr) wptr->dirty = false;
+                    }
 
-                // Draw all widgets into memory DC
-                for (auto &widget : widgets_) {
-                    if (!widget->visible) continue;
-                    widget->draw(memDC);
-                    widget->dirty = false;
+                    // Blit to screen
+                    BitBlt(hdc, 0, 0, w, h, memDC, 0, 0, SRCCOPY);
+
+                    SelectObject(memDC, oldBM);
+                    DeleteObject(memBM);
+                    DeleteDC(memDC);
                 }
-
-                // Blit memory DC to screen
-                BitBlt(hdc, 0, 0, w, h, memDC, 0, 0, SRCCOPY);
-
-                // cleanup
-                SelectObject(memDC, oldBM);
-                DeleteObject(memBM);
-                DeleteDC(memDC);
 
                 EndPaint(hwnd, &ps);
                 return 0;
@@ -882,29 +900,30 @@ private:
                 int y = GET_Y_LPARAM(lParam);
                 // dispatch in reverse order (topmost first)
                 for (auto it = widgets_.rbegin(); it != widgets_.rend(); ++it) {
-                    auto &w = *it;
-                    if (!w->visible) continue;
-                    if (x >= w->geom.x && x < w->geom.x + w->geom.w &&
-                        y >= w->geom.y && y < w->geom.y + w->geom.h) {
+                    auto &wptr = *it; // WidgetPtr
+                    if (!wptr->visible) continue;
+                    if (x >= wptr->geom.x && x < wptr->geom.x + wptr->geom.w &&
+                        y >= wptr->geom.y && y < wptr->geom.y + wptr->geom.h) {
                         // widget-local coords
-                        int lx = x - w->geom.x;
-                        int ly = y - w->geom.y;
-                        w->on_click_internal(lx, ly);
+                        int lx = x - wptr->geom.x;
+                        int ly = y - wptr->geom.y;
+                        wptr->on_click_internal(lx, ly);
 
                         // begin capture for dragging (sliders handled while captured)
-                        capture_widget_ = w.get();
+                        capture_widget_ = wptr.get();
                         SetCapture(hwnd);
 
                         // if the clicked widget is an Entry -> focus management
-                        if (auto e = std::dynamic_pointer_cast<Entry>(w)) {
+                        if (auto e = std::dynamic_pointer_cast<Entry>(wptr)) {
                             if (focused_entry_ && focused_entry_.get() != e.get()) {
                                 focused_entry_->focused = false;
                                 focused_entry_->mark_dirty();
                             }
                             focused_entry_ = e;
                             e->focused = true;
+                            e->mark_dirty();
                         } else {
-                            if (focused_entry_) { focused_entry_->focused = false; focused_entry_.reset(); }
+                            if (focused_entry_) { focused_entry_->focused = false; focused_entry_->mark_dirty(); focused_entry_.reset(); }
                         }
 
                         InvalidateRect(hwnd, NULL, FALSE);
@@ -919,7 +938,6 @@ private:
                 int y = GET_Y_LPARAM(lParam);
                 if (capture_widget_) {
                     Widget* w = capture_widget_;
-                    // compute local coords
                     int lx = x - w->geom.x;
                     int ly = y - w->geom.y;
                     // HSlider dragging
@@ -928,7 +946,6 @@ private:
                         newval = std::clamp(newval, hs->min, hs->max);
                         hs->target = (float)newval;
                         hs->dragging = true;
-                        // mark and don't call on_change here; animation will call on_change when int actually changes
                         hs->mark_dirty();
                         InvalidateRect(hwnd, NULL, FALSE);
                     }
@@ -946,10 +963,8 @@ private:
                     else if (auto cb = dynamic_cast<ComboBox*>(w)) {
                         if (cb->expanded) {
                             int idx = (y - w->geom.y - w->geom.h) / cb->option_height;
-                            // show hover selection visually by temporarily setting selected (but do not commit until mouse up)
                             if (idx >= 0 && idx < (int)cb->options.size()) {
-                                // temporary visual selection (no persistent state change yet)
-                                cb->selected = idx;
+                                cb->selected = idx; // visual hover
                                 cb->mark_dirty();
                                 InvalidateRect(hwnd, NULL, FALSE);
                             }
@@ -965,7 +980,6 @@ private:
                     Widget* w = capture_widget_;
                     if (auto hs = dynamic_cast<HSlider*>(w)) {
                         hs->dragging = false;
-                        // ensure final integer value is set to target immediately
                         hs->fvalue = hs->target;
                         int newv = (int)std::lround(hs->fvalue);
                         if (newv != hs->value) {
