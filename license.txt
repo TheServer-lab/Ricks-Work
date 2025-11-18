@@ -1,13 +1,31 @@
-Ricks-Work License (Attribution Required)
+TheServer-lab Projects License
+Copyright © TheServer-lab, 2025
 
-Copyright (c) 2025 The author
+This license applies to all random Python projects created by the original author (referred to as "the Author").
 
-Permission is hereby granted to anyone to use, copy, modify, and distribute the files in this repository ("Ricks-Work") for any purpose, provided that:
+✅ You Are Allowed To:
+Use the project for personal, educational, or non-commercial purposes.
 
-1. You give proper credit by clearly stating that the work comes from this repository and providing a link to it: 
-   https://github.com/TheServer-lab/Ricks-Work/
-2. You acknowledge the author ([Your Name]) in any distributed or derivative work.
+Modify the source code.
 
-All rights are reserved by the author. The author retains the right to modify the terms of this license or change the license entirely at any time.
+Share, distribute, or repost the original or modified version of the project freely.
 
-THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
+❌ You Must Not:
+Use the project for commercial purposes (no selling, monetization, or profit-making).
+
+Use the project in any way that violates laws, regulations, or the Terms of Service (TOS) of other platforms or companies.
+
+Present modified versions as official or original without proper notice.
+
+📌 You Must:
+Give proper credit to the Author in any redistribution, documentation, or public display of the project.
+
+Clearly state if the project has been modified, including a note that it is an "unofficial modified version" and is "not affiliated with the original author."
+
+Inform users of any changes made from the original version.
+
+🛡 Disclaimer:
+This project is provided "as is", without any warranty. The Author is not responsible for any damages, misuse, or consequences resulting from the use of this project.
+
+Example Attribution (for videos, posts, descriptions, etc.):
+Original project by Rick - https://github.com/TheServer-lab/Ricks-Work (Modified version, unofficial)
